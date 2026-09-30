@@ -1,0 +1,7 @@
+# Frozen JSONL and manifests must retain canonical LF bytes on every checkout.
+* text=auto eol=lf
+*.zip binary
+*.whl binary
+*.gz binary
+*.png binary
+*.jpg binary

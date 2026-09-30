@@ -1,4 +1,4 @@
-include README.md LICENSE CITATION.cff CHANGELOG.md CONTRIBUTING.md requirements-study.txt
+include .gitattributes README.md LICENSE CITATION.cff CHANGELOG.md CONTRIBUTING.md requirements-study.txt
 recursive-include src/quadaudit/data *.json *.jsonl
 recursive-include docs *.md
 recursive-include tests *.py

@@ -258,7 +258,9 @@ console.log(document.getElementById('detail-content').innerHTML);
                     ),
                     text=True,
                     capture_output=True,
-                    timeout=10,
+                    # Windows-hosted Node cold starts can exceed 10s. Keep a
+                    # bounded wait and retain every rendering assertion.
+                    timeout=60,
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn("Selected evidence", result.stdout)
