@@ -1,0 +1,5 @@
+# Frozen core-v1 study environment, Python 3.12.14 on Linux x86_64.
+# Other platforms may produce different represented values or statuses.
+numpy==2.3.5
+scipy==1.17.0
+mpmath==1.3.0

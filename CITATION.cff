@@ -1,0 +1,8 @@
+cff-version: 1.2.0
+message: "If this software contributes to your work, cite the exact version and corpus hash. No paper or DOI is currently associated with this preview."
+title: "QuadAudit: Exact-reference quadrature reliability workbench"
+authors:
+  - name: "QuadAudit contributors"
+version: "0.1.0a1"
+license: BSD-3-Clause
+type: software

@@ -1,0 +1,44 @@
+{
+  "breakpoints": "exact dyadic rationals; every frozen knot is exactly binary64-representable",
+  "bytes": 421517,
+  "canonical_format": "ordered UTF-8 JSONL; ASCII escapes, sorted keys, compact separators, final newline",
+  "case_count": 504,
+  "corpus_id": "core-v1",
+  "design_stream": "SHA-256 of quadaudit.core.v1:<seed>:<counter>; first 8 bytes big-endian modulo choice count",
+  "distinct_mathematical_functions": 504,
+  "family_count": 7,
+  "family_counts": {
+    "beta": 72,
+    "cardinal_bspline": 72,
+    "chebyshev_even": 72,
+    "hinge": 72,
+    "legendre": 72,
+    "power": 72,
+    "staircase": 72
+  },
+  "freeze_date_utc": "2026-09-30",
+  "generator": "quadaudit.corpus.generate_corpus",
+  "license": "BSD-3-Clause",
+  "max_degree": 16,
+  "max_segments": 64,
+  "point_checks": "direct power/beta/hinge/rectangle formulas; closed-form Legendre/Chebyshev; Cox-de Boor spline recurrence",
+  "protocol_sha256": "7d552a1467e9c48a90b708c999f531f5013b0b923030efc23bb560a03fcc102e",
+  "provenance": "Original synthetic construction and code. Classical formulas are not claimed as new. No copied dataset or implementation.",
+  "references": [
+    "independent family identity",
+    "local rational polynomial antiderivative",
+    "separate global-x expansion and exact endpoint integration"
+  ],
+  "schema": "quadaudit.corpus_manifest.v1",
+  "seed": 20260930,
+  "sha256": "543c08a6a759a2ebcfc7f81ac94f32f5fb23b29d5a73d1dbf41ddb454ba07e1d",
+  "sources": [
+    "https://dlmf.nist.gov/5.12#E1",
+    "https://dlmf.nist.gov/18.3",
+    "https://dlmf.nist.gov/18.5",
+    "https://dlmf.nist.gov/18.9",
+    "https://pages.cs.wisc.edu/~deboor/toast/pages005.html"
+  ],
+  "taxonomy": "seven classical archetypes; affine, amplitude and compact-support changes are modifiers",
+  "uniqueness": "global rational polynomial coefficients, trailing-zero trimming, equal-neighbor coalescence, domain included"
+}
