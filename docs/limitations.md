@@ -28,4 +28,4 @@ No library is declared best. No new library defect or mathematical novelty is re
 
 ## Unfinished external gates
 
-Independent human numerical review, at least one upstream accepted contribution or independent adopter, and release-specific macOS/Windows verification remain evidence to obtain. A CI configuration alone does not mean those platforms passed. Public hosting and package registries are separate release steps. No outside researchers have been contacted by this build.
+Independent human numerical review and at least one upstream accepted contribution or independent adopter remain evidence to obtain. The observed Linux/macOS/Windows CI results and exact tested source are recorded in [release verification](release-verification.md); a CI configuration alone does not establish those results. Public hosting and package registries are separate release steps. No outside researchers have been contacted by this build.

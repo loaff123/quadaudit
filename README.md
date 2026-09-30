@@ -23,6 +23,10 @@ Open `tutorial-run/report.html`. The report is standalone and works without a ne
 
 The core package has no runtime dependencies. `pip install .` installs corpus, exact algebra, scoring, and reporting; SciPy and mpmath are optional comparison targets. Missing optional solvers produce explicit unsupported outcomes.
 
+## Download the evidence
+
+The [complete source and raw-evidence ZIP](https://quadaudit.lyczz.chatgpt.site/QuadAudit-0.1.0a1-Complete.zip) includes all frozen and post-hoc experiments. GitHub currently contains the source, tests, frozen corpus and smaller evidence files; its eight-file large-evidence mirror is incomplete. Use the complete ZIP for commands that inspect the bundled experiment directories. The main [raw JSONL](https://quadaudit.lyczz.chatgpt.site/frozen-results.jsonl) and [CSV](https://quadaudit.lyczz.chatgpt.site/frozen-results.csv) are also directly downloadable.
+
 ## What is different here?
 
 - **Inspectable mathematical targets:** 504 frozen original cases across seven construction archetypes. Rational parameters and coefficients are serialized exactly

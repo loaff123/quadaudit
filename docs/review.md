@@ -17,7 +17,7 @@ It did find consequential implementation errors. Every item below has a failing-
 - Primitive budget inputs were not validated: enforce supported integer ranges
 - Invalid estimates became missing without a reference: preserve validity independently of reference availability
 
-The initial defects were caught before frozen main-study execution. The source history and regression tests preserve their existence and repairs. Further whole-project review is required before the release candidate is handed off.
+The initial defects were caught before frozen main-study execution. The source history and regression tests preserve their existence and repairs. A further independent whole-project automated review was completed and led to the hardening described below.
 
 ## Independent corpus reconstruction
 
@@ -43,3 +43,7 @@ No authentication, source signatures, or hostile-process security sandbox is cla
 ## Hosted browser QA findings
 
 Desktop inspection found that configuration headings displayed an unused precision setting for SciPy. Labels now show effective 53-bit SciPy output versus configured mpmath output precision. Post-hoc selected runs now receive a prominent visible selection warning. Both changes have regressions. Default report text is 16 pixels, with controls and data labels at least 14 pixels. These reporting-only changes do not change frozen numerical measurements.
+
+## Cross-platform CI repairs
+
+The first public-source CI run passed core, Linux and macOS jobs, but both Windows jobs failed. Git checkout newline conversion altered the frozen JSONL bytes, and a 10-second Node cold-start limit was too short. Canonical LF attributes now preserve text bytes while retaining binary archive bytes. A regression performs a real temporary Git checkout with `core.autocrlf=true`; it failed without the attributes and passed with them. The JavaScript rendering test retains its assertions with a bounded 60-second startup wait. Frozen corpus and numerical results were not changed.
