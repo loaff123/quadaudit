@@ -1,5 +1,7 @@
 """Report tests inspect emitted evidence and safe HTML, not implementation text."""
 
+from copy import deepcopy
+from dataclasses import asdict
 from fractions import Fraction as F
 from html.parser import HTMLParser
 import json
@@ -8,6 +10,7 @@ import shutil
 import subprocess
 import unittest
 
+from quadaudit.adapters import RunConfig
 from quadaudit.model import Case, Segment
 from quadaudit.report import _fraction, render_report
 
@@ -138,11 +141,67 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(empty.payload()["coverage"]["missing_rows"], 6)
         self.assertIn("No result rows", " ".join(empty.visible))
         partial = ParsedReport(render_report([sample_row()], [sample_case()], {"expected_runs": 8}))
-        self.assertEqual(
-            partial.payload()["coverage"],
-            {"recorded_rows": 1, "expected_rows": 8, "missing_rows": 7, "extra_rows": 0},
-        )
-        self.assertIn("7 scheduled rows are absent", " ".join(partial.visible))
+        count = partial.payload()["coverage"]
+        self.assertEqual(count["recorded_rows"], 1)
+        self.assertEqual(count["expected_rows"], 8)
+        self.assertIn("status", count)
+        self.assertEqual(count["status"], "unverified")
+        self.assertIn("Coverage unverified", " ".join(partial.visible))
+
+    def test_duplicate_replacing_a_missing_case_cannot_claim_complete_coverage(self):
+        row = sample_row()
+        row["config"] = asdict(RunConfig(**row["config"]))
+        other = Case("other", "polynomial", sample_case().segments, F(1, 3))
+        rows = [row, deepcopy(row)]
+        manifest = {
+            "complete": True,
+            "expected_runs": 2,
+            "completed_runs": 2,
+            "protocol": {"configs": [row["config"]]},
+        }
+        parsed = ParsedReport(render_report(rows, [sample_case(), other], manifest))
+        data = parsed.payload()
+        self.assertIn("status", data["coverage"])
+        self.assertEqual(data["coverage"]["status"], "invalid")
+        self.assertEqual(data["coverage"]["duplicate_rows"], 1)
+        self.assertEqual(data["coverage"]["missing_rows"], 1)
+        self.assertEqual(data["rows"], rows)
+        self.assertEqual(data["summary"]["total_rows"], 2)
+        self.assertIn("Coverage invalid", " ".join(parsed.visible))
+        self.assertIn("counts and rates cover recorded rows", " ".join(parsed.visible))
+
+    def test_intentional_partial_report_retains_missing_schedule_identity(self):
+        row = sample_row()
+        row["config"] = asdict(RunConfig(**row["config"]))
+        other = Case("other", "polynomial", sample_case().segments, F(1, 3))
+        manifest = {
+            "complete": False,
+            "expected_runs": 2,
+            "completed_runs": 1,
+            "protocol": {"configs": [row["config"]]},
+        }
+        parsed = ParsedReport(render_report([row], [sample_case(), other], manifest))
+        data = parsed.payload()
+        self.assertIn("status", data["coverage"])
+        self.assertEqual(data["coverage"]["status"], "partial")
+        self.assertEqual(data["coverage"]["missing_rows"], 1)
+        self.assertEqual(data["coverage"]["duplicate_rows"], 0)
+        self.assertIn("Coverage partial", " ".join(parsed.visible))
+        self.assertIn("coverage-json", parsed.ids)
+
+    def test_verified_complete_schedule_is_labeled_complete(self):
+        row = sample_row()
+        row["config"] = asdict(RunConfig(**row["config"]))
+        manifest = {
+            "complete": True,
+            "expected_runs": 1,
+            "completed_runs": 1,
+            "protocol": {"configs": [row["config"]]},
+        }
+        parsed = ParsedReport(render_report([row], [sample_case()], manifest))
+        self.assertIn("status", parsed.payload()["coverage"])
+        self.assertEqual(parsed.payload()["coverage"]["status"], "complete")
+        self.assertIn("identity coverage complete", " ".join(parsed.visible))
 
     def test_exact_and_approximate_evidence_and_trace_cap_are_visible(self):
         parsed = ParsedReport(render_report([sample_row()], [sample_case()], {}))
@@ -210,7 +269,7 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(parsed.payload()["rows"][0]["case_id"], row["case_id"])
         self.assertEqual(parsed.payload()["presentation"][0]["samples"], [])
 
-    def test_target_attainability_is_prominent_and_exact_grid_error_is_retained(self):
+    def test_contradictory_target_diagnostics_are_recomputed_and_raw_retained(self):
         row = sample_row()
         row["target_diagnostics"] = {
             "target_attainable": False,
@@ -219,13 +278,114 @@ class ReportTests(unittest.TestCase):
             "closest_representable_error": "1/27021597764222976",
         }
         parsed = ParsedReport(render_report([row], [sample_case()], {}))
-        self.assertIn("1 output-grid-unattainable targets", " ".join(parsed.visible))
+        data = parsed.payload()
+        self.assertIn("0 output-grid-unattainable targets", " ".join(parsed.visible))
+        self.assertEqual(data["presentation"][0]["labels"]["target_attainability"], "attainable")
+        self.assertIn(
+            "Recorded target diagnostics disagree", data["presentation"][0]["integrity_note"]
+        )
+        self.assertEqual(data["rows"][0], row)
         self.assertEqual(
             parsed.payload()["presentation"][0]["quantities"]["closest_representable_error"][
                 "exact"
             ],
-            "1/27021597764222976",
+            "1/54043195528445952",
         )
+
+    def test_correct_diagnostics_are_preserved_without_an_integrity_warning(self):
+        from quadaudit.adapters import RunConfig, target_diagnostics
+
+        row = sample_row()
+        row["target_diagnostics"] = target_diagnostics(
+            sample_case(), RunConfig(tolerance=row["config"]["tolerance"])
+        )
+        before = deepcopy(row)
+        data = ParsedReport(render_report([row], [sample_case()], {})).payload()
+        self.assertEqual(row, before)
+        self.assertEqual(data["rows"][0], before)
+        self.assertEqual(data["presentation"][0]["integrity_note"], "")
+        self.assertEqual(data["presentation"][0]["labels"]["target_attainability"], "attainable")
+
+    def test_zero_baseline_and_grid_use_verified_reference_and_target(self):
+        for tolerance, attainable, zero in [
+            ("1", "attainable", "zero_sufficient"),
+            ("1/100000000000000000000", "unattainable", "zero_insufficient"),
+        ]:
+            with self.subTest(tolerance=tolerance):
+                row = sample_row()
+                row["config"]["tolerance"] = tolerance
+                row["target_diagnostics"] = {"target_attainable": True, "zero_meets_target": False}
+                data = ParsedReport(render_report([row], [sample_case()], {})).payload()
+                labels = data["presentation"][0]["labels"]
+                self.assertEqual(labels["target_attainability"], attainable)
+                self.assertEqual(labels["zero_target"], zero)
+                self.assertEqual(data["summary"]["target_strata"][0]["zero_target"], zero)
+
+    def test_mpmath_grid_uses_configured_output_precision_not_recorded_diagnostics(self):
+        row = sample_row()
+        row["method"] = row["config"]["method"] = "mpmath_tanhsinh"
+        row["config"].update(precision=80, tolerance="1/100000000000000000000")
+        row["target_diagnostics"] = {
+            "output_precision_bits": 53,
+            "target_attainable": False,
+            "closest_representable_error": "1/54043195528445952",
+        }
+        data = ParsedReport(render_report([row], [sample_case()], {})).payload()
+        evidence = data["presentation"][0]
+        self.assertEqual(evidence["labels"]["target_attainability"], "attainable")
+        self.assertEqual(
+            evidence["quantities"]["closest_representable_error"]["exact"],
+            "1/7253554917687775048237056",
+        )
+        self.assertIn("Recorded target diagnostics disagree", evidence["integrity_note"])
+
+    def test_unknown_or_malformed_output_precision_does_not_trust_grid_metadata(self):
+        for method, precision in [
+            ("future_solver", 80),
+            ("mpmath_tanhsinh", None),
+            ("mpmath_tanhsinh", True),
+            ("mpmath_tanhsinh", "80"),
+            ("mpmath_tanhsinh", 19),
+            ("mpmath_tanhsinh", 513),
+            ("mpmath_tanhsinh", 10**20),
+        ]:
+            with self.subTest(method=method, precision=precision):
+                row = sample_row()
+                row["method"] = row["config"]["method"] = method
+                row["config"]["precision"] = precision
+                row["target_diagnostics"] = {
+                    "target_attainable": True,
+                    "zero_meets_target": True,
+                    "output_precision_bits": 53,
+                    "closest_representable_error": "0",
+                }
+                data = ParsedReport(render_report([row], [sample_case()], {})).payload()
+                detail = data["presentation"][0]
+                self.assertEqual(detail["labels"]["target_attainability"], "unknown")
+                self.assertEqual(detail["labels"]["zero_target"], "zero_insufficient")
+                self.assertIsNone(detail["quantities"]["closest_representable_error"]["exact"])
+                self.assertIn("output precision", detail["integrity_note"])
+
+    def test_unverified_case_target_or_configuration_cannot_validate_diagnostics(self):
+        for mutation in ("missing_case", "bad_reference", "target", "track", "family"):
+            with self.subTest(mutation=mutation):
+                row = sample_row()
+                row["target_diagnostics"] = {"target_attainable": True, "zero_meets_target": True}
+                cases = [sample_case()]
+                if mutation == "missing_case":
+                    cases = []
+                elif mutation == "bad_reference":
+                    cases = [Case("square", "polynomial", sample_case().segments, F(2))]
+                elif mutation == "target":
+                    row["config"]["tolerance"] = "nan"
+                elif mutation == "track":
+                    row["config"]["track"] = "split"
+                elif mutation == "family":
+                    row["family"] = "wrong"
+                detail = ParsedReport(render_report([row], cases, {})).payload()["presentation"][0]
+                self.assertEqual(detail["labels"]["target_attainability"], "unknown")
+                self.assertEqual(detail["labels"]["zero_target"], "unknown")
+                self.assertIsNone(detail["quantities"]["closest_representable_error"]["exact"])
 
     def test_started_count_is_not_substituted_for_unknown_completed_count(self):
         row = sample_row()
@@ -264,6 +424,38 @@ console.log(document.getElementById('detail-content').innerHTML);
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn("Selected evidence", result.stdout)
+
+    @unittest.skipUnless(shutil.which("node"), "optional JavaScript runtime is unavailable")
+    def test_browser_detail_shows_verified_output_precision_without_raw_fallback(self):
+        harness = r"""
+const fs=require('fs'),input=JSON.parse(fs.readFileSync(0,'utf8')),elements=new Map();
+const make=()=>({value:'',textContent:'',innerHTML:'',disabled:false,
+ addEventListener(){},append(){},querySelectorAll(){return []}});
+global.document={getElementById(id){if(!elements.has(id))elements.set(id,make());return elements.get(id)},createElement:make};
+document.getElementById('study-data').textContent=JSON.stringify(input.payload);
+eval(input.script);
+console.log(document.getElementById('detail-content').innerHTML);
+"""
+        for precision, expected in [(80, "80"), ("malformed", "unknown")]:
+            with self.subTest(precision=precision):
+                row = sample_row()
+                row["method"] = row["config"]["method"] = "mpmath_tanhsinh"
+                row["config"]["precision"] = precision
+                row["target_diagnostics"] = {"output_precision_bits": 53}
+                row["output_precision_bits"] = 53
+                parsed = ParsedReport(render_report([row], [sample_case()], {}))
+                result = subprocess.run(
+                    [shutil.which("node"), "-e", harness],
+                    input=json.dumps(
+                        {"payload": parsed.payload(), "script": parsed.scripts[-1]["text"]}
+                    ),
+                    text=True,
+                    capture_output=True,
+                    timeout=60,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(f"Output precision: {expected} bits", result.stdout)
+                self.assertNotIn("Output precision: 53 bits", result.stdout)
 
     def test_evidence_rationals_reject_exponents_and_bound_integer_size_before_parsing(self):
         for value in ["1e10000", "0.25", "1/0", "9" * 4934, "1/" + "9" * 4934]:

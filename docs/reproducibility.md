@@ -61,7 +61,13 @@ quadaudit report experiments/my-reproduction
 
 The version-checked script refuses a different pinned dependency set. The general CLI can explore other versions/settings; those runs are separate experiments. Exact corpus regeneration is byte-for-byte. Solver values and native outcomes may vary across library versions and platforms, so cross-platform bitwise numerical equality is not promised.
 
-The report CLI checks corpus/protocol/result hashes and counts, then recomputes displayed judgments against audited matching cases. Hashes detect inconsistent artifacts; they are not authentication signatures. The first dirty-source run and its limitations are preserved in `experiments/README.md`.
+The report CLI checks corpus/protocol/result hashes, then validates each result identity against the exact corpus × `protocol.configs` schedule. The full recorded configuration (including method and track) must match one scheduled configuration; heterogeneous configurations are not expanded into a new cross-product. Duplicate, unexpected, malformed, or falsely complete schedules are rejected even when their hashes and total row counts agree. The protocol file and the embedded manifest protocol must also agree. A coherent partial experiment remains reportable and is labeled partial.
+
+The standalone report API preserves every supplied row and exposes coverage as complete, partial, invalid, or unverified, with missing/duplicate/unexpected identities and reasons. Without an explicit configuration schedule, row counts alone cannot verify coverage. Rates always cover recorded rows, including duplicates if directly imported; invalid or unverified coverage is not a complete scheduled-study rate.
+
+Displayed accuracy and target diagnostics are recomputed against independently audited matching cases. Output-grid attainability uses binary64 for the two SciPy methods (including subnormal spacing and finite limits), and the configured 20–512-bit output precision for mpmath, not its callback guard precision. Unknown methods or malformed mpmath precision leave grid diagnostics unknown; a verified reference and target can still establish the zero baseline. Missing or inconsistent case/configuration evidence leaves the diagnostics unknown. Contradictory recorded diagnostics are flagged, and original metadata remains available unchanged. `analysis.summarize` alone is a descriptive aggregator of supplied labels; use the report path for independently checked display classifications.
+
+Hashes detect inconsistent artifacts; they are not authentication signatures. The first dirty-source run and its limitations are preserved in `experiments/README.md`.
 
 ## Verification boundary
 

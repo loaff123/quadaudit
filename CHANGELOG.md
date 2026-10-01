@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Recompute report target-attainability and zero-baseline strata from audited references, effective output grids, and exact tolerances; flag contradictory recorded metadata without modifying it
+- Validate experiment case/configuration identities against the protocol schedule, including duplicate, missing, and unexpected rows; expose honest complete, partial, invalid, and unverified report coverage
+- Preserve frozen data, numerical engine behavior, and historical results
+
 ## 0.1.0a1 (research preview)
 
 - Exact rational piecewise-polynomial model, transformations and conservative enclosure adjudication

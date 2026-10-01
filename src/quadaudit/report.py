@@ -8,6 +8,7 @@ from html import escape
 import json
 import math
 import re
+import sys
 
 from .analysis import (
     classifications,
@@ -17,7 +18,8 @@ from .analysis import (
     summarize,
 )
 from .model import Case
-from .oracle import audit_case
+from .coverage import coverage as schedule_coverage
+from .oracle import audit_case, nearest_binary
 
 
 def _fraction(value):
@@ -32,6 +34,68 @@ def _quantity(value):
         ctx.prec = 6
         approximate = format(Decimal(exact.numerator) / Decimal(exact.denominator), ".6g")
     return {"exact": fraction_text(exact), "approx": approximate}
+
+
+def _verified_diagnostics(row, case, target, evidence_valid):
+    """Recompute target strata; recorded metadata never establishes the output grid."""
+    checked = {
+        "output_precision_bits": None,
+        "closest_representable_error": None,
+        "target_attainable": None,
+        "zero_meets_target": None,
+    }
+    notes = []
+    if evidence_valid:
+        checked["zero_meets_target"] = abs(case.reference) <= target
+        config = row["config"]
+        method = row["method"]
+        precision = config.get("precision")
+        is_mp = method == "mpmath_tanhsinh"
+        if method in ("scipy_quad", "scipy_tanhsinh"):
+            precision = 53
+        elif not (
+            is_mp
+            and isinstance(precision, int)
+            and not isinstance(precision, bool)
+            and 20 <= precision <= 512
+        ):
+            precision = None
+        if precision is None:
+            notes.append(
+                "Unknown or invalid output precision; output-grid diagnostics are unknown."
+            )
+        else:
+            nearest = nearest_binary(
+                case.reference,
+                precision,
+                min_exponent=None if is_mp else -1074,
+                max_abs=None if is_mp else Fraction.from_float(sys.float_info.max),
+            )
+            lower = abs(nearest - case.reference)
+            checked.update(
+                output_precision_bits=precision,
+                closest_representable_error=fraction_text(lower),
+                target_attainable=lower <= target,
+            )
+            if "output_precision_bits" in row and (
+                type(row["output_precision_bits"]) is not int
+                or row["output_precision_bits"] != precision
+            ):
+                notes.append(
+                    "Recorded output precision disagrees with the method/configuration output grid."
+                )
+    recorded = row.get("target_diagnostics")
+    if recorded is not None and (
+        not isinstance(recorded, dict)
+        or any(
+            key in recorded and (type(recorded[key]) is not type(value) or recorded[key] != value)
+            for key, value in checked.items()
+        )
+    ):
+        notes.append(
+            "Recorded target diagnostics disagree with verified evidence; displayed strata are recomputed. Original row retained below."
+        )
+    return checked, notes
 
 
 def _verified_row(row, case, reference_valid):
@@ -56,6 +120,20 @@ def _verified_row(row, case, reference_valid):
         "tolerance": fraction_text(target) if target is not None else None,
     }
     notes = []
+    evidence_valid = bool(
+        case is not None
+        and reference_valid
+        and isinstance(row.get("method"), str)
+        and isinstance(row.get("track"), str)
+        and config.get("method") == row["method"]
+        and config.get("track") == row["track"]
+        and row.get("family") == case.family
+        and target is not None
+        and target >= 0
+    )
+    diagnostics, diagnostic_notes = _verified_diagnostics(row, case, target, evidence_valid)
+    effective["target_diagnostics"] = diagnostics
+    notes.extend(diagnostic_notes)
     if case is None:
         notes.append("Case definition unavailable; recorded accuracy claims cannot be verified.")
     elif not reference_valid:
@@ -228,6 +306,7 @@ def _presentation(row, case):
     }
     return {
         "labels": classifications(row),
+        "output_precision_bits": diagnostics.get("output_precision_bits"),
         "configuration_id": configuration_identity(row)["id"],
         "quantities": quantities,
         "samples": samples,
@@ -238,18 +317,6 @@ def _presentation(row, case):
             if case
             else "Case definition unavailable; no integrand curve can be reconstructed."
         ),
-    }
-
-
-def _coverage(rows, manifest):
-    expected = manifest.get("expected_runs")
-    if not isinstance(expected, int) or isinstance(expected, bool) or expected < 0:
-        expected = None
-    return {
-        "recorded_rows": len(rows),
-        "expected_rows": expected,
-        "missing_rows": max(0, expected - len(rows)) if expected is not None else None,
-        "extra_rows": max(0, len(rows) - expected) if expected is not None else None,
     }
 
 
@@ -339,7 +406,7 @@ def render_report(rows: list[dict], cases: list[Case], manifest: dict) -> str:
             reference_validity[key] = audit_case(case)["valid"]
         except (ValueError, OverflowError):
             reference_validity[key] = False
-    coverage = _coverage(rows, manifest)
+    coverage = schedule_coverage(rows, cases, manifest)
     effective_rows, presentation = [], []
     for row in rows:
         case = case_map.get(row.get("case_id")) if isinstance(row.get("case_id"), str) else None
@@ -352,7 +419,7 @@ def render_report(rows: list[dict], cases: list[Case], manifest: dict) -> str:
         presentation.append(detail)
     summary = summarize(effective_rows)
     summary["evidence_policy"] = (
-        "Display adjudication is recomputed against independently audited matching case references. Unverifiable rows are unscorable; original rows are preserved."
+        "Display adjudication and target diagnostics are recomputed against independently audited matching case references, the recorded target, and the method/configuration output precision. Unverifiable adjudication is unscorable and unverified diagnostics are unknown; original rows are preserved."
     )
     payload = {
         "rows": rows,
@@ -370,8 +437,16 @@ def render_report(rows: list[dict], cases: list[Case], manifest: dict) -> str:
     excluded = len(rows) - summary["in_contract"]["total_rows"]
     coverage_note = f"{len(rows):,} recorded rows"
     if coverage["expected_rows"] is not None:
-        coverage_note += f" of {coverage['expected_rows']:,} scheduled"
+        coverage_note += f"; {coverage['expected_rows']:,} expected rows"
+    coverage_note += f"; identity coverage {coverage['status']}"
     alerts = []
+    if coverage["status"] != "complete":
+        alerts.append(
+            f"Coverage {coverage['status']}: "
+            + " ".join(coverage["reasons"])
+            + " All supplied rows are retained; counts and rates cover recorded rows only. "
+            "They do not establish complete scheduled-study rates."
+        )
     selection = manifest.get("selection")
     if isinstance(selection, dict) and selection.get("type") == "post_hoc_explanatory":
         alerts.append(
@@ -384,15 +459,7 @@ def render_report(rows: list[dict], cases: list[Case], manifest: dict) -> str:
     integrity_count = sum(bool(p["integrity_note"]) for p in presentation)
     if integrity_count:
         alerts.append(
-            f"{integrity_count:,} rows need evidence attention. Displayed adjudication is recomputed against audited case definitions; missing or invalid evidence is unscorable. Inspect each row's evidence note and original record."
-        )
-    if coverage["missing_rows"]:
-        alerts.append(
-            f"{coverage['missing_rows']:,} scheduled rows are absent. Counts and rates below cover recorded rows only."
-        )
-    if coverage["extra_rows"]:
-        alerts.append(
-            f"{coverage['extra_rows']:,} extra rows exceed the manifest schedule; check provenance before interpreting rates."
+            f"{integrity_count:,} rows need evidence attention. Displayed adjudication and target diagnostics are recomputed against audited case definitions; unverifiable judgments are unscorable and unknown diagnostics stay unknown. Inspect each row's evidence note and original record."
         )
     if manifest.get("complete") is False or manifest.get("status") == "partial":
         alerts.append("The manifest marks this study incomplete.")
@@ -463,6 +530,7 @@ a{color:var(--teal)}button,input,select{font:inherit}button,select{cursor:pointe
 <noscript><p class="notice">JavaScript is needed for filtering and case detail. The study-wide counts and matrix above remain readable; all raw evidence is embedded in this document.</p></noscript></section>
 <section class="panel" id="case-detail" aria-labelledby="detail-title"><div id="detail-content"><h2 id="detail-title">Case evidence</h2><p class="empty">Choose a recorded result to inspect its evidence.</p></div></section>
 <section class="panel" aria-labelledby="reading-title"><h2 id="reading-title">How to read this study</h2><p class="help">The boundaries of the claim matter as much as the result.</p><div class="caveats"><div><p><strong>An exact reference for a mathematical model</strong>The reference is the rational integral of the declared piecewise-polynomial function. Result and error comparisons use exact represented rationals. Callback rounding, solver arithmetic, and aggregation can still affect the returned number.</p><p><strong>Two information tracks</strong>Blind runs receive the callback and domain. Split runs receive all polynomial segment boundaries and share one total evaluation budget. Split aggregation is an adapter policy; it is not a single native solver call.</p><p><strong>Applicability is a separate question</strong>Every multi-segment blind SciPy tanhsinh run is conservatively exploratory and excluded from in-contract summaries. Exploration is retained for diagnosis, regardless of whether its answer is accurate.</p></div><div><p><strong>Work counts are not full computational fairness</strong>Exact-rounded callbacks use rational evaluation and cost more than ordinary floating-point callbacks. Evaluation counts include repeated abscissae and probes; native nfev may differ. Counts do not measure full computational cost or justify speed rankings.</p><p><strong>Return, termination, and accuracy differ</strong>mpmath has no native success flag: a return is not a reported convergence success. Its precision-driven stopping criterion is not SciPy's requested absolute tolerance. Missing and zero estimates have separate meanings; “sufficient” is for this case, not a certified bound.</p><p><strong>A fixed designed corpus, not a population sample</strong>These parameterized cases probe chosen mechanisms. Family-macro rates give equal weight to eligible families; they do not estimate real-world probabilities or establish a general solver ranking. Failed, pending, unresolved, and exploratory records remain included in the evidence.</p></div></div>
+<details><summary>Scheduled identity coverage, missing rows, and duplicates</summary><pre id="coverage-json"></pre></details>
 <details><summary>Manifest, environment, hashes, and protocol</summary><pre id="manifest-json"></pre></details><details><summary>Complete case definitions and exact references</summary><pre id="cases-json"></pre></details></section>
 <footer class="footer"><span>QuadAudit · transparent numerical experiments</span><span>Plot coordinates and decimal labels are approximate. Rational evidence is authoritative.</span></footer></main>
 <script id="study-data" type="application/json">@@DATA@@</script>
@@ -493,7 +561,7 @@ if(!filtered.length){$('matrix').innerHTML='<p class="empty">No recorded rows ma
 $('matrix').innerHTML='<table class="matrix"><caption>Accurate / all in-contract rows, including nonreturns in the denominator. Excluded means applicability is not in_contract.</caption><thead><tr><th scope="col">Family</th>'+cols.map(([m,t,cid])=>'<th scope="col">'+esc(m)+'<span>'+esc(t)+'</span><span>'+esc(configurations.get(cid)?.label??'configuration unknown')+'</span></th>').join('')+'</tr></thead><tbody>'+[...families].sort().map(f=>'<tr><th scope="row">'+esc(f)+'</th>'+cols.map(([m,t,cid])=>{const g=groups.get(JSON.stringify([f,m,t,cid]));return g?'<td><strong>'+g.accurate+' / '+g.eligible+'</strong><span>'+g.total+' recorded · '+(g.total-g.eligible)+' excluded</span></td>':'<td class="muted">No rows</td>'}).join('')+'</tr>').join('')+'</tbody></table>';}
 const qty=q=>q&&q.exact!==null?'<span class="rational">'+esc(q.exact)+'</span>'+(q.approx!==null?'<span class="approx">≈ '+esc(q.approx)+'</span>':'<span class="approx">No finite rational value available</span>'):'<span class="muted">Not available</span>';
 function renderDetail(scroll){if(selected===null){$('detail-content').innerHTML='<h2 id="detail-title">Case evidence</h2><p class="empty">No selected result. Change the filters or add result rows.</p>';return}
-const r=rows[selected],d=p[selected],c=lookup(data.cases,r.case_id),w=r.work||{},adj=r.adjudication||{},plot=lookup(data.plots,r.case_id),td=r.target_diagnostics||{};
+const r=rows[selected],d=p[selected],c=lookup(data.cases,r.case_id),w=r.work||{},adj=r.adjudication||{},plot=lookup(data.plots,r.case_id);
 const native=r.native_success===true?'Native success reported':r.native_success===false?'Native failure reported':'No native success flag reported';
 const qnames=[['reference','Declared exact integral'],['value','Returned q'],['tolerance','Absolute accuracy target'],['error_lower','Exact-error lower bound'],['error_upper','Exact-error upper bound'],['error_estimate','Reported error estimate'],['closest_representable_error','Closest output-grid error']];
 const quantities=qnames.map(([k,n])=>'<tr><th scope="row">'+n+'</th><td>'+qty(d.quantities[k])+'</td></tr>').join('');
@@ -503,7 +571,7 @@ let options='<option value="all">Full domain</option>';if(plot)plot.segments.for
 $('detail-content').innerHTML='<div class="detail-head"><div class="section-head"><div><div class="kicker">Selected evidence · recorded row '+(selected+1)+'</div><h2 id="detail-title" tabindex="-1">'+esc(r.case_id)+'</h2><p class="help">'+esc(c?.description||'No case description supplied')+'</p></div><button id="download-row" class="small-button">Download this evidence</button></div><div class="tags">'+pill(field(r,'method'))+pill(field(r,'track'))+pill(d.labels.applicability)+pill(d.labels.outcome)+pill(d.labels.accuracy)+'</div></div>'+
 (d.integrity_note?'<p class="notice">'+esc(d.integrity_note)+'</p>':'')+
 '<div class="detail-grid"><div><div class="plot-box"><div class="plot-top"><label for="plot-view">Integrand & sample abscissae</label><select id="plot-view">'+options+'</select></div><div id="integrand-plot"></div><div class="legend"><span><b></b>Mathematical integrand sketch</span><span><b class="sample"></b>Retained abscissae</span></div><p class="plot-note">'+esc(d.plot_note)+'</p></div><p class="help">'+esc(d.trace_note)+'</p><div class="axes-note">Trace marks show where callbacks were sampled, with duplicates potentially overlapping. They do not certify a global bound on callback evaluation error.</div></div><div><h3>Exact evidence</h3><table class="evidence-table"><tbody>'+quantities+'</tbody></table><p class="help">Estimate adequacy: '+pill(d.labels.estimate)+(d.labels.zero_estimate?' · zero-estimate category: '+esc(d.labels.zero_estimate):'')+'</p><p class="help">All threshold decisions use rational arithmetic. Decimal labels are display approximations.</p></div></div>'+
-'<div class="detail-section"><h3>Target and numeric precision</h3><p class="help">Target attainability: '+esc(d.labels.target_attainability)+' · Returning zero: '+esc(d.labels.zero_target)+'. Output precision: '+number(td.output_precision_bits??r.output_precision_bits)+' bits. Observed callback precision: '+esc(Array.isArray(r.callback_precision_bits_observed)?r.callback_precision_bits_observed.join(', '):'unknown')+' bits. Precision-driven methods may evaluate callbacks at higher precision than their final output.</p></div>'+
+'<div class="detail-section"><h3>Target and numeric precision</h3><p class="help">Target attainability: '+esc(d.labels.target_attainability)+' · Returning zero: '+esc(d.labels.zero_target)+'. Output precision: '+number(d.output_precision_bits)+' bits. Observed callback precision: '+esc(Array.isArray(r.callback_precision_bits_observed)?r.callback_precision_bits_observed.join(', '):'unknown')+' bits. Precision-driven methods may evaluate callbacks at higher precision than their final output.</p></div>'+
 '<div class="detail-section"><h3>Termination is separate from correctness</h3><p>'+esc(native)+' · '+pill(d.labels.accuracy)+'</p><p class="help">'+esc(r.message||r.applicability_note||'No additional native or applicability message.')+'</p><div class="work-grid">'+works+'</div><p class="help">Charged / started evaluations can include a callback that raised. Completed callbacks are separate. Missing accounting is unknown, never zero. Native nfev and elapsed time are preserved in raw evidence below.</p></div>'+
 '<details><summary>Native pieces, warnings, settings, aggregation, and complete retained trace</summary><pre id="row-json"></pre></details><details><summary>Selected case definition</summary><pre id="case-json"></pre></details>';
 $('row-json').textContent=JSON.stringify(r,null,2);$('case-json').textContent=JSON.stringify(c??{message:'Case definition unavailable'},null,2);
@@ -520,6 +588,6 @@ function download(name,body,type){const url=URL.createObjectURL(new Blob([body],
 const jsonl=indices=>indices.map(i=>JSON.stringify(rows[i])).join('\n')+(indices.length?'\n':'');
 $('download-all').addEventListener('click',()=>download('quadaudit-results.jsonl',jsonl(rows.map((_,i)=>i)),'application/x-ndjson'));
 $('download-filtered').addEventListener('click',()=>download('quadaudit-filtered.jsonl',jsonl(filtered),'application/x-ndjson'));
-$('summary-json').textContent=JSON.stringify(data.summary,null,2);$('manifest-json').textContent=JSON.stringify(data.manifest,null,2);$('cases-json').textContent=JSON.stringify(data.cases,null,2);renderTable();renderDetail(false);
+$('coverage-json').textContent=JSON.stringify(data.coverage,null,2);$('summary-json').textContent=JSON.stringify(data.summary,null,2);$('manifest-json').textContent=JSON.stringify(data.manifest,null,2);$('cases-json').textContent=JSON.stringify(data.cases,null,2);renderTable();renderDetail(false);
 })();
 </script></body></html>"""

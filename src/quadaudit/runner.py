@@ -14,6 +14,7 @@ import sys
 import time
 from .adapters import RunConfig, empty_result, run_case
 from .model import Case
+from .coverage import coverage
 from . import __version__
 
 
@@ -252,7 +253,7 @@ MAX_RESULT_LINE_BYTES = 20 * 1024 * 1024
 
 
 def verify_experiment_artifacts(directory: Path) -> dict:
-    """Detect missing, truncated, or modified artifacts; hashes are integrity, not signatures."""
+    """Verify artifact hashes and exact schedule coverage; hashes are not signatures."""
     directory = Path(directory)
     mpth = directory / "manifest.json"
     if mpth.stat().st_size > 1024 * 1024:
@@ -284,6 +285,33 @@ def verify_experiment_artifacts(directory: Path) -> dict:
                 digest.update(chunk)
         if digest.hexdigest() != manifest.get(key):
             raise ValueError(f"artifact hash mismatch: {filename}")
+    protocol_path = directory / "protocol.json"
+    if protocol_path.stat().st_size > 1024 * 1024:
+        raise ValueError("oversized experiment protocol")
+    protocol = json.loads(protocol_path.read_text(encoding="utf-8"))
+    if not isinstance(protocol, dict) or canonical(protocol) != canonical(manifest.get("protocol")):
+        raise ValueError("protocol.json does not match manifest embedded protocol")
+
+    # Read bounded case records here without imposing additional mathematical
+    # corpus-audit policy on artifact integrity checks. The CLI separately audits
+    # references when it loads the corpus for report rendering.
+    from .corpus import MAX_CASES, MAX_CORPUS_BYTES, MAX_LINE_BYTES
+
+    corpus_path = directory / "corpus.jsonl"
+    if corpus_path.stat().st_size > MAX_CORPUS_BYTES:
+        raise ValueError("corpus exceeds byte limit")
+    cases = []
+    for line_no, line in enumerate(corpus_path.read_bytes().splitlines(), 1):
+        if len(cases) >= MAX_CASES or len(line) > MAX_LINE_BYTES:
+            raise ValueError("corpus exceeds case or line limit")
+        try:
+            cases.append(Case.from_dict(json.loads(line)))
+        except (ValueError, TypeError, UnicodeError) as exc:
+            raise ValueError(f"invalid corpus row {line_no}: {exc}") from exc
+    rows = list(read_results(directory / "results.jsonl"))
+    checked = coverage(rows, cases, manifest)
+    if checked["status"] not in ("complete", "partial"):
+        raise ValueError("invalid experiment schedule: " + "; ".join(checked["reasons"]))
     return manifest
 
 

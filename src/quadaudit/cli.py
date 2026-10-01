@@ -9,6 +9,7 @@ import re
 from pathlib import Path
 import sys
 from .adapters import METHODS, RunConfig
+from .coverage import coverage
 from .model import Case, rational
 from .runner import experiment, read_results, verify_experiment_artifacts
 
@@ -217,9 +218,10 @@ def main(argv=None):
 
             manifest = verify_experiment_artifacts(args.experiment)
             rows = list(read_results(args.experiment / "results.jsonl"))
-            if len(rows) != manifest["completed_runs"]:
-                raise ValueError("manifest completed count does not match evidence rows")
             cases = _load(args.experiment / "corpus.jsonl")
+            checked = coverage(rows, cases, manifest)
+            if checked["status"] not in ("complete", "partial"):
+                raise ValueError("invalid experiment schedule: " + "; ".join(checked["reasons"]))
             target = args.output or args.experiment / "report.html"
             target.write_text(render_report(rows, cases, manifest), encoding="utf-8")
             print(target)
